@@ -1,0 +1,68 @@
+name: Sync upstream
+
+# Haalt elke nacht de nieuwste versie van corebunch/instatic binnen en voegt
+# die samen met de eigen aanpassingen (Spotify-embed). Lukt het samenvoegen
+# niet (conflict) of bouwt het resultaat niet, dan faalt deze run en stuurt
+# GitHub een e-mail; main blijft dan ongewijzigd.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/corebunch/instatic.git
+          git fetch --no-tags upstream main
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "Al bij met upstream."
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream
+        if: steps.check.outputs.new == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit upstream/main || {
+            echo "::error::Merge-conflict met upstream. Los op via 'Sync fork' op GitHub of vraag om hulp."
+            git merge --abort
+            exit 1
+          }
+
+      - name: Set up Bun
+        if: steps.check.outputs.new == 'true'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build check
+        if: steps.check.outputs.new == 'true'
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          bun test src/__tests__/spotify-url.test.ts
+
+      - name: Push
+        if: steps.check.outputs.new == 'true'
+        run: git push origin HEAD:main
